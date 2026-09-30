@@ -89,6 +89,32 @@ document.addEventListener('pointerdown', (e) => {
   span.addEventListener('animationend', () => span.remove());
 });
 
+/* ================= Theme (light / dark) ================= */
+const themeMedia = window.matchMedia('(prefers-color-scheme: dark)');
+function applyTheme(theme, animate) {
+  const root = document.documentElement;
+  if (animate) {
+    root.classList.add('theme-anim');
+    setTimeout(() => root.classList.remove('theme-anim'), 450);
+  }
+  root.setAttribute('data-theme', theme);
+  const next = theme === 'dark' ? 'light' : 'dark';
+  const btn = $('#themeToggle');
+  btn.title = `Switch to ${next} mode`;
+  btn.setAttribute('aria-label', btn.title);
+  $('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#0b1619' : '#ffffff');
+}
+applyTheme(document.documentElement.getAttribute('data-theme') || 'light', false);
+$('#themeToggle').addEventListener('click', () => {
+  const theme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  store.set('theme', theme); // an explicit choice wins over the device setting from now on
+  applyTheme(theme, true);
+});
+// Follow the device setting until the user picks one themselves.
+themeMedia.addEventListener?.('change', (e) => {
+  if (store.get('theme', null) === null) applyTheme(e.matches ? 'dark' : 'light', true);
+});
+
 /** Run an async action with a spinner on the button; shows errors as toasts. */
 async function withLoading(btn, fn) {
   btn?.classList.add('loading');
@@ -265,7 +291,7 @@ function viewBook() {
         <div class="legend">
           <span><i></i>Available</span>
           <span><i style="background:var(--primary);border-color:var(--primary)"></i>Selected</span>
-          <span><i style="background:repeating-linear-gradient(-45deg,#f4f6f7,#f4f6f7 3px,#e3e8ea 3px,#e3e8ea 6px)"></i>Booked</span>
+          <span><i style="background:repeating-linear-gradient(-45deg,var(--stripe-a),var(--stripe-a) 3px,var(--stripe-b) 3px,var(--stripe-b) 6px)"></i>Booked</span>
           <span><i style="border-style:dashed"></i>Past</span>
         </div>
       </div>
@@ -941,7 +967,7 @@ async function loadReport() {
 
   box.innerHTML = `
     <div class="kpis stagger">
-      ${kpi('Booked', sum('booked') + sum('walk_ins'), ICON.book, '#eaf2ff', '#2563eb', '', 0)}
+      ${kpi('Booked', sum('booked') + sum('walk_ins'), ICON.book, 'var(--info-50)', 'var(--info)', '', 0)}
       ${kpi('Seen', sum('seen'), ICON.check, 'var(--success-50)', 'var(--success)', '', 1)}
       ${kpi('No-shows', sum('no_shows'), ICON.alert, 'var(--danger-50)', 'var(--danger)', '', 2)}
       ${kpi('Avg wait', avgWait, ICON.clock, 'var(--warn-50)', 'var(--warn)', ' min', 3)}
