@@ -7,10 +7,12 @@
     "start": "node --env-file-if-exists=.env src/server.js",
     "dev": "node --env-file-if-exists=.env --watch src/server.js",
     "test": "node --test \"test/**/*.test.js\"",
-    "seed": "node --env-file-if-exists=.env scripts/seed.js"
+    "seed": "node --env-file-if-exists=.env scripts/seed.js",
+    "autopush": "node scripts/autopush.js",
+    "setup-hooks": "git config core.hooksPath .githooks"
   },
   "engines": {
-    "node": ">=22.9"
+    "node": "22.x"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",

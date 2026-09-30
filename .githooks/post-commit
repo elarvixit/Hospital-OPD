@@ -1,0 +1,9 @@
+#!/bin/sh
+# Push every commit to GitHub automatically (Vercel then deploys main).
+branch=$(git rev-parse --abbrev-ref HEAD)
+echo "[auto-push] pushing $branch to origin..."
+if git push origin "$branch"; then
+  echo "[auto-push] done"
+else
+  echo "[auto-push] push failed - run 'git push' manually"
+fi

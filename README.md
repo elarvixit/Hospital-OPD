@@ -21,7 +21,7 @@ With no `.env` file, `npm start` uses an **in-memory database with demo data**. 
 
 1. **Supabase:** Dashboard → **SQL Editor** → New query → paste [supabase/schema.sql](supabase/schema.sql) → **Run**. It's safe to run again later.
    All tables, views and functions are prefixed `ganesh_hospitalopd_`.
-2. **Vercel:** import the GitHub repo (Framework preset: *Other*; no build command needed; `vercel.json` sets everything). Add these under **Project → Settings → Environment Variables**:
+2. **Vercel:** import the GitHub repo. No build command is needed: `vercel.json` sets the framework to *Other*, serves `public/` and routes `/api/*` to `api/index.js`, even if Vercel auto-detected the project as Express. Add these under **Project → Settings → Environment Variables**:
 
    | Name | Value | Where to find it |
    |---|---|---|
@@ -48,6 +48,13 @@ With no `.env` file, `npm start` uses an **in-memory database with demo data**. 
 | Stretch: auto-refreshing waiting screen (10 s) | `display.html`; the queue tabs also poll every 10 s |
 | Stretch: notification log | **SMS log** tab: `SMS sent to 98xxxxxx10: …` |
 | Stretch: reschedule with next 3 free slots | **Appointments** → *Reschedule* |
+
+## Auto-deploy
+
+Vercel deploys every push to `main` to production.
+
+- **Every commit is pushed automatically** by the Git hook in [.githooks/post-commit](.githooks/post-commit). After a fresh clone, turn it on once with `npm run setup-hooks`.
+- **`npm run autopush`** goes one step further: it watches the project, and ~8 s after you stop saving it runs the tests. If they pass, it commits and pushes. If they fail, nothing is pushed. Stop it with Ctrl+C.
 
 ## Project layout
 
