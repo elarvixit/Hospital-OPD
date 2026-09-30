@@ -241,6 +241,8 @@ main { max-width: 1280px; margin: 0 auto; padding: 24px; }
 .day-chip.selected { border-color: var(--primary); background: linear-gradient(160deg, var(--primary), #14a39e); color: #fff; box-shadow: 0 8px 18px rgba(14, 143, 139, 0.3); }
 .day-chip.selected .dow { color: rgba(255, 255, 255, 0.85); }
 .day-chip.selected .dot { background: #fff; }
+.day-chip.selected.off .dot { background: transparent; }
+.day-chip.selected.off { opacity: 1; background: linear-gradient(160deg, #8fb3b1, #9cbfbc); border-color: #8fb3b1; box-shadow: none; }
 
 .slots { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; }
 .slot {

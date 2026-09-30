@@ -23,6 +23,7 @@ const store = {
 };
 
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const DOW_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const parseDate = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
 const toDateStr = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -35,6 +36,14 @@ const avatar = (doc, lg = false) => `<div class="avatar ${lg ? 'avatar-lg' : ''}
 const pill = (status, label) => `<span class="pill pill-${status}">${esc(label || status.replace('_', ' '))}</span>`;
 const isOnLeave = (doc, date) => doc.leaves.some((l) => date >= l.start_date && date <= l.end_date);
 const worksOn = (doc, date) => doc.schedules.some((s) => s.weekday === parseDate(date).getDay());
+/** First date from `from` (inclusive) within 60 days when the doctor consults and isn't on leave. */
+const nextWorkingDay = (doc, from) => {
+  for (let i = 0; i < 60; i++) {
+    const d = addDays(from, i);
+    if (worksOn(doc, d) && !isOnLeave(doc, d)) return d;
+  }
+  return from;
+};
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 
 const ICON = {
@@ -236,7 +245,7 @@ function viewBook() {
   if (!state.doctors.length) return noDoctorsView('Booking');
   const b = state.book;
   if (!doctorById(b.doctorId)) b.doctorId = state.doctors[0]?.id ?? null;
-  if (!b.date || b.date < state.today) b.date = state.today;
+  if (!b.date || b.date < state.today) b.date = nextWorkingDay(doctorById(b.doctorId), state.today);
   b.slot = null;
 
   app.innerHTML = `
@@ -347,6 +356,12 @@ function renderDocPicker() {
     const opt = e.target.closest('.doc-option');
     if (!opt) return;
     state.book.doctorId = Number(opt.dataset.id);
+    // Jump to this doctor's next working day so there are slots to pick.
+    const doc = doctorById(state.book.doctorId);
+    if (!worksOn(doc, state.book.date) || isOnLeave(doc, state.book.date)) {
+      state.book.date = nextWorkingDay(doc, state.today);
+      $('#dateInput').value = state.book.date;
+    }
     state.book.slot = null;
     $$('.doc-option').forEach((o) => o.classList.toggle('selected', o === opt));
     renderDateStrip();
@@ -388,6 +403,16 @@ async function loadSlots() {
   if (!box || !doctorId) return;
   const reqId = ++slotReq;
   box.innerHTML = `<div class="slots">${'<div class="skeleton" style="height:38px"></div>'.repeat(12)}</div>`;
+  box.onclick = (e) => {
+    const jump = e.target.closest('[data-jump]');
+    if (!jump) return;
+    state.book.date = jump.dataset.jump;
+    state.book.slot = null;
+    $('#dateInput').value = state.book.date;
+    renderDateStrip();
+    loadSlots();
+    updateSummary();
+  };
   try {
     const data = await api(`/doctors/${doctorId}/slots?date=${date}`);
     if (reqId !== slotReq) return; // a newer request superseded this one
@@ -400,7 +425,7 @@ async function loadSlots() {
       return;
     }
     if (!data.working) {
-      box.innerHTML = `<div class="empty"><span class="big">📅</span><strong>No OPD on ${fmtDate(date)}</strong><div class="small">${esc(doc.name)} doesn't consult on ${DOW[parseDate(date).getDay()]}s</div></div>`;
+      box.innerHTML = `<div class="empty"><span class="big">📅</span><strong>No OPD on ${fmtDate(date)}</strong><div class="small">${esc(doc.name)} doesn't consult on ${DOW_FULL[parseDate(date).getDay()]}s.</div>${workingDaysLine(doc, date)}</div>`;
       return;
     }
     const soldOut = free === 0 ? `<div class="banner">${ICON.alert}<div>No free slots left on this day. Try the next working day, or add the patient as a walk-in.</div></div>` : '';
@@ -417,6 +442,14 @@ async function loadSlots() {
   } catch (err) {
     box.innerHTML = `<div class="empty">${esc(err.message)}</div>`;
   }
+}
+
+function workingDaysLine(doc, date) {
+  const days = [...new Set(doc.schedules.map((s) => s.weekday))].sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7));
+  if (!days.length) return '<div class="small" style="margin-top:6px">No weekly schedule yet — add one in the Doctors tab.</div>';
+  const next = nextWorkingDay(doc, date);
+  return `<div class="small" style="margin-top:6px">Consults on: <strong>${days.map((d) => DOW_FULL[d]).join(', ')}</strong></div>
+    ${next !== date ? `<button type="button" class="btn btn-sm btn-primary" style="margin-top:12px" data-jump="${next}">Go to ${fmtDate(next)}</button>` : ''}`;
 }
 
 function updateSummary() {
