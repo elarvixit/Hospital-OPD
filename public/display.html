@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OPD Waiting Area</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800;900&display=swap" />
+  <style>
+    :root { --bg: #062a2e; --panel: rgba(255, 255, 255, 0.06); --border: rgba(255, 255, 255, 0.1); --text: #eafcfb; --muted: #8fb8b8; --accent: #2dd4bf; --ease: cubic-bezier(0.22, 1, 0.36, 1); }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; color: var(--text); font-family: 'Inter', system-ui, sans-serif;
+      background: radial-gradient(1000px 600px at 90% -10%, rgba(45, 212, 191, 0.18), transparent 60%), radial-gradient(800px 500px at -10% 110%, rgba(59, 130, 246, 0.14), transparent 60%), var(--bg);
+      padding: 28px 32px;
+    }
+    header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 26px; gap: 16px; flex-wrap: wrap; }
+    header h1 { margin: 0; font-size: clamp(22px, 3vw, 34px); font-weight: 800; letter-spacing: -0.02em; }
+    header p { margin: 4px 0 0; color: var(--muted); }
+    .clock { font-size: clamp(28px, 4vw, 48px); font-weight: 800; font-variant-numeric: tabular-nums; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+    .panel {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 22px; padding: 22px; backdrop-filter: blur(6px);
+      animation: rise 0.6s var(--ease) both; animation-delay: calc(var(--i) * 80ms);
+    }
+    @keyframes rise { from { opacity: 0; transform: translateY(18px); } }
+    .doc { font-size: 20px; font-weight: 700; }
+    .dept { color: var(--muted); font-size: 14px; margin-top: 2px; }
+    .serving { margin: 18px 0; padding: 20px; border-radius: 18px; text-align: center; background: linear-gradient(145deg, #0e8f8b, #14b8a6); position: relative; overflow: hidden; }
+    .serving.idle { background: rgba(255, 255, 255, 0.05); }
+    .serving .label { font-size: 13px; letter-spacing: 0.16em; text-transform: uppercase; font-weight: 700; opacity: 0.85; }
+    .serving .token { font-size: clamp(64px, 9vw, 110px); font-weight: 900; line-height: 1; margin-top: 6px; font-variant-numeric: tabular-nums; }
+    .serving.flash { animation: flash 1.6s ease-out; }
+    @keyframes flash { 0% { box-shadow: 0 0 0 0 rgba(45, 212, 191, 0.9); transform: scale(1.04); } 100% { box-shadow: 0 0 0 30px rgba(45, 212, 191, 0); transform: none; } }
+    .serving .token.flip { animation: flip 0.7s var(--ease); }
+    @keyframes flip { from { transform: rotateX(90deg); opacity: 0; } }
+    .room { font-size: 15px; margin-top: 6px; opacity: 0.9; }
+    .next { display: flex; justify-content: space-between; align-items: center; font-size: 18px; padding: 12px 16px; border-radius: 14px; background: rgba(255, 255, 255, 0.06); }
+    .next b { font-size: 26px; font-variant-numeric: tabular-nums; }
+    .waiting { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+    .waiting span { padding: 6px 12px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); font-weight: 700; font-variant-numeric: tabular-nums; }
+    footer { margin-top: 26px; color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 8px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: blink 1.5s infinite; }
+    @keyframes blink { 50% { opacity: 0.25; } }
+    .ticker { overflow: hidden; white-space: nowrap; margin-top: 18px; padding: 10px 0; border-top: 1px solid var(--border); color: var(--muted); }
+    .ticker span { display: inline-block; padding-left: 100%; animation: ticker 28s linear infinite; }
+    @keyframes ticker { to { transform: translateX(-100%); } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div><h1>Outpatient Department</h1><p>Please wait for your token to be called</p></div>
+    <div class="clock" id="clock">--:--</div>
+  </header>
+  <div class="grid" id="grid"></div>
+  <div class="ticker"><span>Please keep your token slip ready · If you miss your turn you will be moved to the end of the queue once · Wear a mask in the waiting area · Emergency? Please approach the front desk immediately</span></div>
+  <footer><span class="dot"></span><span id="updated">Connecting…</span></footer>
+
+  <script>
+    const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    const last = {};
+    let first = true;
+
+    function tick() { document.getElementById('clock').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+    tick(); setInterval(tick, 1000);
+
+    function chime() {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        [660, 880].forEach((f, i) => {
+          const o = ctx.createOscillator(); const g = ctx.createGain();
+          o.frequency.value = f; o.connect(g); g.connect(ctx.destination);
+          const t = ctx.currentTime + i * 0.25;
+          g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.2, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.5);
+          o.start(t); o.stop(t + 0.55);
+        });
+      } catch { /* audio blocked until user interacts */ }
+    }
+
+    async function load() {
+      try {
+        const queues = await fetch('/api/queue').then((r) => r.json());
+        let changed = false;
+        document.getElementById('grid').innerHTML = queues.map((q, i) => {
+          const s = q.serving;
+          const token = s ? s.token : null;
+          const isNew = !first && token !== null && last[q.doctor.id] !== token;
+          if (isNew) changed = true;
+          last[q.doctor.id] = token;
+          return `<div class="panel" style="--i:${first ? i : 0};${first ? '' : 'animation:none'}">
+            <div class="doc">${esc(q.doctor.name)}</div>
+            <div class="dept">${esc(q.doctor.department)}</div>
+            <div class="serving ${s ? '' : 'idle'} ${isNew ? 'flash' : ''}">
+              <div class="label">Now serving</div>
+              <div class="token ${isNew ? 'flip' : ''}">${s ? s.token : '—'}</div>
+              ${q.doctor.room ? `<div class="room">Room ${esc(q.doctor.room)}</div>` : ''}
+            </div>
+            <div class="next"><span>Next</span><b>${q.next ? q.next.token : '—'}</b></div>
+            <div class="waiting">${q.waiting.map((e) => `<span>${e.token}</span>`).join('')}</div>
+          </div>`;
+        }).join('');
+        if (changed) chime();
+        first = false;
+        document.getElementById('updated').textContent = `Live · updated ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} · refreshes every 10 s`;
+      } catch {
+        document.getElementById('updated').textContent = 'Connection lost — retrying…';
+      }
+    }
+    load();
+    setInterval(load, 10000);
+  </script>
+</body>
+</html>

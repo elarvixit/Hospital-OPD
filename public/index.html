@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Elarvix OPD</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230e8f8b'/%3E%3Cpath d='M4 17h6l3-7 4 13 3-6h8' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/">
+        <div class="brand-logo">
+          <svg viewBox="0 0 32 32" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 17h6l3-7 4 13 3-6h10" opacity="0.35" />
+            <path class="ecg" d="M3 17h6l3-7 4 13 3-6h10" />
+          </svg>
+        </div>
+        <div>
+          <h1>Elarvix OPD</h1>
+          <p>Outpatient queue &amp; appointments</p>
+        </div>
+      </a>
+      <div class="topbar-right">
+        <div class="clock"><span class="live-dot"></span><span id="clock" class="mono">--:--</span></div>
+        <div class="role-switch">
+          <select id="role" class="select" aria-label="Role">
+            <option value="desk">Front desk</option>
+            <option value="doctor">Doctor</option>
+          </select>
+          <select id="doctorSelect" class="select" aria-label="Doctor" hidden></select>
+        </div>
+        <a class="btn btn-sm" href="display.html" target="_blank" rel="noopener" title="Open the waiting-area screen">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+          Waiting display
+        </a>
+      </div>
+    </div>
+    <div class="tabs-wrap"><nav class="tabs" id="tabs"></nav></div>
+  </header>
+
+  <main id="app"></main>
+  <div class="toasts" id="toasts"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
