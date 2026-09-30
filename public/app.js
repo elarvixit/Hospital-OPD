@@ -208,8 +208,32 @@ function renderView() {
   fn();
 }
 
+/* ================= Empty state ================= */
+function noDoctorsView(what) {
+  const isDesk = state.role === 'desk';
+  app.innerHTML = `
+  <section class="view">
+    <div class="empty" style="padding:60px 20px">
+      <span class="big">🩺</span>
+      <h2 style="margin:6px 0 8px">No doctors yet</h2>
+      <p style="margin:0 0 18px">${esc(what)} needs at least one doctor with a weekly schedule.</p>
+      ${isDesk
+        ? '<button class="btn btn-primary" id="goDoctors">' + ICON.plus + 'Add your first doctor</button>'
+        : '<p class="small">Switch to <strong>Front desk</strong> (top right) and add doctors in the Doctors tab.</p>'}
+    </div>
+  </section>`;
+  $('#goDoctors')?.addEventListener('click', () => {
+    state.view = 'doctors';
+    store.set('view', state.view);
+    renderTabs();
+    renderView();
+    openDoctorForm();
+  });
+}
+
 /* ================= Book ================= */
 function viewBook() {
+  if (!state.doctors.length) return noDoctorsView('Booking');
   const b = state.book;
   if (!doctorById(b.doctorId)) b.doctorId = state.doctors[0]?.id ?? null;
   if (!b.date || b.date < state.today) b.date = state.today;
@@ -618,6 +642,7 @@ async function doQueueAction(doctorId, action, btn) {
 }
 
 function viewQueue() {
+  if (!state.doctors.length) return noDoctorsView('The live queue');
   app.innerHTML = `
   <section class="view">
     <div class="page-head">
@@ -650,6 +675,7 @@ async function refreshQueue(first) {
 
 /* ================= Doctor: my queue ================= */
 function viewMyQueue() {
+  if (!state.doctors.length) return noDoctorsView('My queue');
   app.innerHTML = `<section class="view"><div id="myQueue"><div class="card"><div class="skeleton" style="height:420px"></div></div></div></section>`;
   refreshMyQueue(true);
 }
@@ -724,6 +750,10 @@ function viewDoctors() {
 
 function renderDoctorCards() {
   const grid = $('#docGrid');
+  if (!state.doctors.length) {
+    grid.innerHTML = '<div class="empty" style="grid-column:1/-1"><span class="big">🩺</span><strong>No doctors yet</strong><div class="small">Click <b>Add doctor</b> to create one with a weekly schedule.</div></div>';
+    return;
+  }
   grid.innerHTML = state.doctors.map((d, i) => {
     const upcoming = d.leaves.filter((l) => l.end_date >= state.today);
     return `
