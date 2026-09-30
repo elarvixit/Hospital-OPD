@@ -474,3 +474,119 @@ tbody tr:last-child td { border-bottom: 0; }
 }
 
 .banner svg, .card-title h3 svg { width: 18px; height: 18px; flex: none; }
+
+.leave-field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 130px; min-width: 0; font-size: 11.5px; font-weight: 600; color: var(--muted); }
+
+/* ============ Mobile ============ */
+/* Grid children default to min-width:auto, so a wide child (the scrolling date strip,
+   a table) would stretch the whole column past the screen. Let them shrink. */
+.grid > *, .dq-grid > *, .card { min-width: 0; }
+
+@media (max-width: 960px) {
+  .sticky { position: static; }
+}
+
+@media (max-width: 640px) {
+  body { font-size: 14px; }
+  main { padding: 16px; }
+
+  /* Header: one compact row + scrollable tabs */
+  .topbar-inner { padding: 10px 16px; gap: 10px; flex-wrap: nowrap; }
+  .brand { gap: 10px; min-width: 0; }
+  .brand-logo { width: 36px; height: 36px; border-radius: 10px; }
+  .brand-logo svg { width: 24px; height: 24px; }
+  .brand h1 { font-size: 15px; white-space: nowrap; }
+  .brand p, .clock, .display-link span { display: none; }
+  .topbar-right { gap: 6px; flex-wrap: nowrap; }
+  .role-switch { gap: 6px; }
+  .select { padding: 7px 28px 7px 10px; background-position: right 9px center; max-width: 128px; text-overflow: ellipsis; }
+  .display-link { padding: 7px 9px; }
+  .tabs-wrap { padding: 0 8px; }
+  .tab { padding: 10px 10px; font-size: 13px; gap: 6px; }
+  .tab svg { width: 15px; height: 15px; }
+
+  .hide-sm { display: none; }
+  .role-doctor .brand h1 { display: none; }
+  .role-doctor .select { max-width: 118px; }
+
+  /* Page headers and toolbars stack */
+  .page-head { margin-bottom: 14px; gap: 12px; }
+  .page-head h2 { font-size: 20px; }
+  .page-head p { font-size: 13px; }
+  .page-head > .btn { width: 100%; }
+  .toolbar { width: 100%; }
+  .toolbar .input, .toolbar .select { flex: 1 1 140px; min-width: 0; width: auto !important; max-width: none; }
+
+  /* Cards */
+  .card { padding: 16px; border-radius: 12px; }
+  .grid { gap: 14px; }
+  .grid-cards { grid-template-columns: 1fr; }
+  .card-title { flex-wrap: wrap; }
+  .card-title .input[type="date"] { width: 100% !important; }
+
+  /* Book */
+  .doc-picker { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .doc-option { padding: 10px; gap: 8px; flex-direction: column; align-items: flex-start; }
+  .doc-option strong { font-size: 13px; }
+  .avatar { width: 34px; height: 34px; font-size: 12.5px; border-radius: 10px; }
+  .day-chip { width: 56px; }
+  .slots { grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .slot { padding: 10px 2px; font-size: 13px; }
+  .legend { gap: 10px; }
+
+  /* Prevent iOS from zooming into inputs (needs >= 16px) */
+  .input, .select, input, select { font-size: 16px; }
+
+  /* Tables become stacked cards */
+  .table-wrap.stack table, .table-wrap.stack tbody, .table-wrap.stack tr, .table-wrap.stack td { display: block; width: 100%; }
+  .table-wrap.stack thead { display: none; }
+  .table-wrap.stack tr { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; margin: 8px 0; background: var(--surface); }
+  .table-wrap.stack td { border: 0; padding: 5px 0; display: flex; justify-content: space-between; align-items: center; gap: 12px; text-align: right; }
+  .table-wrap.stack td::before { content: attr(data-label); color: var(--muted); font-size: 12px; font-weight: 600; text-align: left; flex: none; }
+  .table-wrap.stack td[data-label=""]::before { display: none; }
+  .table-wrap.stack td[data-label=""] { justify-content: flex-start; text-align: left; font-size: 15px; }
+  .table-wrap.stack td .actions { width: 100%; justify-content: stretch; flex-wrap: wrap; }
+  .table-wrap.stack td .actions .btn { flex: 1; }
+  .table-wrap.stack tbody tr:hover { background: var(--surface); }
+  .table-wrap.stack { overflow: visible; }
+  .card:has(> .table-wrap.stack) { background: none; border: 0; box-shadow: none; padding: 0 !important; }
+  .table-wrap.stack tr { box-shadow: var(--shadow-sm); margin: 0 0 10px; }
+
+  /* Report */
+  .kpis { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .kpi .k-value { font-size: 24px; }
+  .kpi .k-icon { width: 30px; height: 30px; right: 10px; top: 10px; }
+
+  /* Queue */
+  .now-serving .token { font-size: 40px; }
+  .hero { padding: 16px; }
+  .hero .now-serving { padding: 24px 14px; }
+  .hero .now-serving .token { font-size: 64px; }
+  .hero .now-serving .who { font-size: 16px; }
+  .q-actions .btn { padding: 12px; }
+
+  /* Doctors */
+  .week { gap: 3px; }
+  .week-day .b { font-size: 9.5px; }
+  form[data-act="leaveform"] .leave-field { flex: 1 1 100%; }
+  form[data-act="leaveform"] .btn { flex: 1 1 100% !important; }
+
+  /* Modal becomes a bottom sheet */
+  .modal-backdrop { padding: 0; place-items: end stretch; }
+  .modal { width: 100%; max-height: 92vh; border-radius: 18px 18px 0 0; padding: 18px 16px calc(18px + env(safe-area-inset-bottom)); animation: sheetIn 0.35s var(--ease); }
+  @keyframes sheetIn { from { transform: translateY(100%); } }
+  .modal .row { flex-direction: column; gap: 0; }
+  .modal .toolbar .btn { flex: 1; }
+  .sched-row { grid-template-columns: 1fr 1fr 1fr auto; gap: 6px; }
+  .sched-row .input, .sched-row .select { padding: 8px 6px; font-size: 14px; }
+  .offer-slots { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .offer { padding: 12px 4px; }
+  .offer .t { font-size: 17px; }
+
+  /* Toasts full width at the bottom */
+  .toasts { left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); }
+  .toast { min-width: 0; max-width: none; }
+
+  .sms { padding: 10px 12px; }
+  .empty { padding: 26px 14px; }
+}

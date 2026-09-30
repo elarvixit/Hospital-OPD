@@ -188,6 +188,7 @@ function renderRoleControls() {
   $('#role').value = state.role;
   const sel = $('#doctorSelect');
   sel.hidden = state.role !== 'doctor';
+  document.body.classList.toggle('role-doctor', state.role === 'doctor');
   sel.innerHTML = state.doctors.map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('');
   if (!state.doctors.some((d) => d.id === state.doctorId)) state.doctorId = state.doctors[0]?.id ?? null;
   sel.value = state.doctorId;
@@ -438,6 +439,9 @@ async function loadSlots() {
       state.book.slot = slot.dataset.start;
       $$('.slot', box).forEach((s) => s.classList.toggle('selected', s === slot));
       updateSummary();
+      if (window.matchMedia('(max-width: 960px)').matches) {
+        setTimeout(() => $('#patientForm')?.closest('.card').scrollIntoView({ behavior: 'smooth', block: 'start' }), 250);
+      }
     };
   } catch (err) {
     box.innerHTML = `<div class="empty">${esc(err.message)}</div>`;
@@ -486,7 +490,7 @@ function viewAppointments() {
         <input class="input" id="apSearch" placeholder="Search name or phone" style="width:190px" value="${esc(s.search)}" />
       </div>
     </div>
-    <div class="card" style="padding:8px 8px 4px"><div class="table-wrap" id="apTable"></div></div>
+    <div class="card" style="padding:8px 8px 4px"><div class="table-wrap stack" id="apTable"></div></div>
   </section>`;
 
   const reload = () => loadAppointments(docFilter);
@@ -524,13 +528,13 @@ async function loadAppointments(doctorId) {
     <thead><tr><th>Token</th><th>Time</th><th>Patient</th>${state.role === 'desk' && !s.doctorId ? '<th>Doctor</th>' : ''}<th>Type</th><th>Status</th>${isDesk ? '<th></th>' : ''}</tr></thead>
     <tbody>${rows.map((r, i) => `
       <tr style="--i:${i}">
-        <td>${r.token ? `<span class="token-badge">${r.token}</span>` : '<span class="muted">—</span>'}</td>
-        <td class="mono"><strong>${r.slot_start || '—'}</strong></td>
-        <td><strong>${esc(r.patient_name)}</strong><div class="muted small mono">${esc(r.patient_phone)} · ${r.patient_age}y</div></td>
-        ${state.role === 'desk' && !s.doctorId ? `<td>${esc(r.doctor_name)}<div class="muted small">${esc(r.department)}</div></td>` : ''}
-        <td>${r.kind === 'walkin' ? pill('walkin', 'walk-in') : '<span class="muted small">Scheduled</span>'}</td>
-        <td>${statusLabel(r)}</td>
-        ${isDesk ? `<td><div class="actions">${rowActions(r)}</div></td>` : ''}
+        <td data-label="Token">${r.token ? `<span class="token-badge">${r.token}</span>` : '<span class="muted">—</span>'}</td>
+        <td data-label="Time" class="mono"><strong>${r.slot_start || '—'}</strong></td>
+        <td data-label="Patient"><div><strong>${esc(r.patient_name)}</strong><div class="muted small mono">${esc(r.patient_phone)} · ${r.patient_age}y</div></div></td>
+        ${state.role === 'desk' && !s.doctorId ? `<td data-label="Doctor"><div>${esc(r.doctor_name)}<div class="muted small">${esc(r.department)}</div></div></td>` : ''}
+        <td data-label="Type">${r.kind === 'walkin' ? pill('walkin', 'walk-in') : '<span class="muted small">Scheduled</span>'}</td>
+        <td data-label="Status">${statusLabel(r)}</td>
+        ${isDesk ? `<td data-label="">${rowActions(r) ? `<div class="actions">${rowActions(r)}</div>` : ''}</td>` : ''}
       </tr>`).join('')}</tbody></table>`;
 
   box.onclick = async (e) => {
@@ -738,7 +742,7 @@ async function refreshMyQueue(first) {
           <div class="who">${s ? `${esc(s.patient_name)} · ${s.patient_age}y` : line.length ? 'Press “Call next” when you’re ready' : 'No patients waiting'}</div>
           ${s ? `<div class="small" style="opacity:.85;margin-top:6px">${s.kind === 'walkin' ? 'Walk-in' : `Slot ${s.slot_start}`} · checked in ${fmtTime(s.checked_in_at)}${s.skips ? ` · skipped ${s.skips}× before` : ''}</div>` : ''}
         </div>
-        <div style="margin-top:18px">${queueButtons(q).replace('>' + ICON.check + 'Done<', '>' + ICON.check + 'Done — next patient<')}</div>
+        <div style="margin-top:18px">${queueButtons(q).replace('>' + ICON.check + 'Done<', '>' + ICON.check + 'Done<span class="hide-sm">&nbsp;— next patient</span><')}</div>
         <div class="q-stats" style="margin-top:16px;justify-content:center"><span>Waiting <b>${line.length}</b></span><span>Seen <b>${q.done.length}</b></span><span>No-show <b>${q.noShow.length}</b></span></div>
       </div>
       <div class="grid" style="align-content:start">
@@ -801,10 +805,10 @@ function renderDoctorCards() {
       <div class="muted small" style="font-weight:600;margin-bottom:6px">Upcoming leave</div>
       ${upcoming.length ? upcoming.map((l) => `<div class="leave-item"><span>🌴 ${fmtDate(l.start_date)}${l.end_date !== l.start_date ? ` → ${fmtDate(l.end_date)}` : ''}${l.reason ? ` · <span class="muted">${esc(l.reason)}</span>` : ''}</span><button class="btn btn-ghost btn-sm" data-act="rmleave" data-leave="${l.id}" title="Remove">${ICON.x}</button></div>`).join('') : '<div class="muted small" style="margin-bottom:8px">None scheduled</div>'}
       <form class="row" data-act="leaveform" style="margin-top:10px;gap:6px;flex-wrap:wrap">
-        <input type="date" class="input" name="start" min="${state.today}" required title="From" style="min-width:130px" />
-        <input type="date" class="input" name="end" min="${state.today}" title="To (optional)" style="min-width:130px" />
-        <input class="input" name="reason" placeholder="Reason (optional)" style="min-width:130px" />
-        <button class="btn btn-sm" type="submit" style="flex:0">${ICON.plus}Add leave</button>
+        <label class="leave-field"><span>Leave from</span><input type="date" class="input" name="start" min="${state.today}" required /></label>
+        <label class="leave-field"><span>To (optional)</span><input type="date" class="input" name="end" min="${state.today}" /></label>
+        <label class="leave-field"><span>Reason (optional)</span><input class="input" name="reason" placeholder="e.g. Conference" /></label>
+        <button class="btn btn-sm" type="submit" style="flex:0;align-self:flex-end;padding:10px 12px">${ICON.plus}Add leave</button>
       </form>
     </div>`;
   }).join('');
@@ -942,20 +946,20 @@ async function loadReport() {
       ${kpi('No-shows', sum('no_shows'), ICON.alert, 'var(--danger-50)', 'var(--danger)', '', 2)}
       ${kpi('Avg wait', avgWait, ICON.clock, 'var(--warn-50)', 'var(--warn)', ' min', 3)}
     </div>
-    <div class="card" style="padding:8px 8px 4px"><div class="table-wrap"><table>
+    <div class="card" style="padding:8px 8px 4px"><div class="table-wrap stack"><table>
       <thead><tr><th>Doctor</th><th>Booked</th><th>Walk-ins</th><th>Cancelled</th><th>Checked in</th><th>Seen</th><th>No-shows</th><th>Not arrived</th><th>Avg wait</th><th>Avg consult</th><th>Seen / expected</th></tr></thead>
       <tbody>${rows.map((r, i) => {
         const expected = r.booked + r.walk_ins;
         const pct = expected ? Math.round((r.seen / expected) * 100) : 0;
         return `<tr style="--i:${i}">
-          <td><strong>${esc(r.doctor_name)}</strong><div class="muted small">${esc(r.department)}</div></td>
-          <td class="mono">${r.booked}</td><td class="mono">${r.walk_ins}</td><td class="mono">${r.cancelled}</td><td class="mono">${r.checked_in}</td>
-          <td class="mono"><strong>${r.seen}</strong></td>
-          <td>${r.no_shows ? pill('no_show', String(r.no_shows)) : '<span class="mono">0</span>'}</td>
-          <td class="mono">${r.not_arrived}</td>
-          <td class="mono">${r.avg_wait_min === null ? '—' : `${r.avg_wait_min} min`}</td>
-          <td class="mono">${r.avg_consult_min === null ? '—' : `${r.avg_consult_min} min`}</td>
-          <td><div style="display:flex;align-items:center;gap:8px"><div class="bar" style="flex:1"><span data-w="${pct}"></span></div><span class="small mono">${pct}%</span></div></td>
+          <td data-label=""><div><strong>${esc(r.doctor_name)}</strong><div class="muted small">${esc(r.department)}</div></div></td>
+          <td data-label="Booked" class="mono">${r.booked}</td><td data-label="Walk-ins" class="mono">${r.walk_ins}</td><td data-label="Cancelled" class="mono">${r.cancelled}</td><td data-label="Checked in" class="mono">${r.checked_in}</td>
+          <td data-label="Seen" class="mono"><strong>${r.seen}</strong></td>
+          <td data-label="No-shows">${r.no_shows ? pill('no_show', String(r.no_shows)) : '<span class="mono">0</span>'}</td>
+          <td data-label="Not arrived" class="mono">${r.not_arrived}</td>
+          <td data-label="Avg wait" class="mono">${r.avg_wait_min === null ? '—' : `${r.avg_wait_min} min`}</td>
+          <td data-label="Avg consult" class="mono">${r.avg_consult_min === null ? '—' : `${r.avg_consult_min} min`}</td>
+          <td data-label="Seen / expected"><div style="display:flex;align-items:center;gap:8px;flex:1;max-width:220px"><div class="bar" style="flex:1"><span data-w="${pct}"></span></div><span class="small mono">${pct}%</span></div></td>
         </tr>`;
       }).join('')}</tbody></table></div></div>`;
   $$('[data-to]', box).forEach(countUp);
