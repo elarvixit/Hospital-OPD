@@ -1,16 +1,10 @@
 'use strict';
 
-const { transaction } = require('./db');
+const { AppError, SlotTakenError, LeaveOverlapError, QueueConflictError } = require('./errors');
 const { isValidDate, isValidTime, toMinutes, addDays, localDate, minutesBetween, WEEKDAY_NAMES } = require('./core/time');
 const { generateDaySlots, isOnLeave, mergeIntervals } = require('./core/slots');
 const Queue = require('./core/queue');
 
-class AppError extends Error {
-  constructor(status, message) {
-    super(message);
-    this.status = status;
-  }
-}
 const bad = (msg) => new AppError(400, msg);
 const notFound = (msg) => new AppError(404, msg);
 const conflict = (msg) => new AppError(409, msg);
@@ -74,63 +68,64 @@ function validateSchedules(schedules, durationMin) {
   return cleaned;
 }
 
+const QUEUE_FIELDS = ['token', 'seq', 'state', 'skips', 'checked_in_at', 'called_at', 'served_at'];
+
+/** Which entries the pure queue functions added/changed, and which appointments finished. */
+function diffQueue(before, after) {
+  const old = new Map(before.map((e) => [e.id, e]));
+  const changed = [];
+  const statusUpdates = [];
+  for (const e of after) {
+    const prev = e.id === undefined ? null : old.get(e.id);
+    if (prev && QUEUE_FIELDS.every((f) => prev[f] === e[f])) continue;
+    changed.push(e);
+    if (prev && e.state !== prev.state && (e.state === 'done' || e.state === 'no_show')) {
+      statusUpdates.push({ id: e.appointment_id, status: e.state });
+    }
+  }
+  return { changed, statusUpdates };
+}
+
 /**
- * @param {DatabaseSync} db
- * @param {{ now?: () => Date }} opts  inject a clock so tests can time-travel
+ * @param repo  a repository (src/repo/supabase.js or src/repo/memory.js)
+ * @param opts.now       clock, injectable so tests can time-travel
+ * @param opts.timeZone  hospital timezone, e.g. 'Asia/Kolkata' (defaults to APP_TIMEZONE, else machine local)
  */
-function createServices(db, { now = () => new Date() } = {}) {
-  const today = () => localDate(now());
+function createServices(repo, { now = () => new Date(), timeZone = process.env.APP_TIMEZONE || undefined } = {}) {
+  const today = () => localDate(now(), timeZone);
 
   // ---------- helpers ----------
-  const q = (sql) => db.prepare(sql);
-
-  function notify(phone, message) {
-    q('INSERT INTO notifications (phone, message, created_at) VALUES (?, ?, ?)').run(
-      phone,
-      `SMS sent to ${maskPhone(phone)}: ${message}`,
-      now().toISOString()
-    );
+  async function notify(phone, message) {
+    await repo.insertNotification({ phone, message: `SMS sent to ${maskPhone(phone)}: ${message}`, created_at: now().toISOString() });
   }
 
-  function getDoctorRow(id) {
-    const d = q('SELECT * FROM doctors WHERE id = ?').get(Number(id));
+  async function getDoctor(id) {
+    const d = await repo.getDoctor(Number(id));
     if (!d) throw notFound('Doctor not found');
     return d;
   }
 
-  function getDoctor(id) {
-    const d = getDoctorRow(id);
-    d.schedules = q('SELECT id, weekday, start_time, end_time FROM schedules WHERE doctor_id = ? ORDER BY weekday, start_time').all(d.id);
-    d.leaves = q('SELECT id, start_date, end_date, reason FROM leaves WHERE doctor_id = ? ORDER BY start_date').all(d.id);
-    return d;
+  async function getAppointment(id) {
+    const a = await repo.getAppointment(Number(id));
+    if (!a) throw notFound('Appointment not found');
+    return a;
   }
 
-  function bookedStarts(doctorId, date, excludeAppointmentId = null) {
-    return q(
-      `SELECT slot_start FROM appointments
-       WHERE doctor_id = ? AND date = ? AND status <> 'cancelled' AND slot_start IS NOT NULL AND id IS NOT ?`
-    )
-      .all(doctorId, date, excludeAppointmentId)
-      .map((r) => r.slot_start);
-  }
+  const slotsFor = (doctor, date, booked) => generateDaySlots({
+    date, durationMin: doctor.duration_min, schedules: doctor.schedules, leaves: doctor.leaves, booked, now: now(), timeZone,
+  });
 
-  function daySlots(doctor, date, excludeAppointmentId = null) {
-    return generateDaySlots({
-      date,
-      durationMin: doctor.duration_min,
-      schedules: doctor.schedules,
-      leaves: doctor.leaves,
-      booked: bookedStarts(doctor.id, date, excludeAppointmentId),
-      now: now(),
-    });
+  async function daySlots(doctor, date, excludeAppointmentId = null) {
+    const booked = await repo.bookedStarts(doctor.id, date, date, excludeAppointmentId);
+    return slotsFor(doctor, date, booked[date] || []);
   }
 
   /** Throw a helpful error if `slot` can't be booked for doctor on date. */
-  function assertBookable(doctor, date, slot, excludeAppointmentId = null) {
+  async function assertBookable(doctor, date, slot, excludeAppointmentId = null) {
     if (!isValidDate(date)) throw bad('Date must be YYYY-MM-DD');
     if (!isValidTime(slot)) throw bad('Slot must be HH:MM');
     if (date < today()) throw bad('Cannot book a date in the past');
-    const day = daySlots(doctor, date, excludeAppointmentId);
+    const day = await daySlots(doctor, date, excludeAppointmentId);
     if (day.onLeave) throw bad(`${doctor.name} is on leave on ${date}`);
     const match = day.slots.find((s) => s.start === slot);
     if (!match) throw bad(`${slot} is not a valid slot for ${doctor.name} on ${date}`);
@@ -138,159 +133,126 @@ function createServices(db, { now = () => new Date() } = {}) {
     if (match.status === 'past') throw bad(`${slot} on ${date} is in the past`);
   }
 
-  function findOrCreatePatient(p) {
-    const existing = q('SELECT * FROM patients WHERE phone = ? AND name = ? COLLATE NOCASE').get(p.phone, p.name);
-    if (existing) {
-      if (existing.age !== p.age) q('UPDATE patients SET age = ? WHERE id = ?').run(p.age, existing.id);
-      return existing.id;
+  const runQueue = (fn) => {
+    try { return fn(); } catch (err) {
+      if (err instanceof Queue.QueueError) throw conflict(err.message);
+      throw err;
     }
-    return Number(q('INSERT INTO patients (name, phone, age) VALUES (?, ?, ?)').run(p.name, p.phone, p.age).lastInsertRowid);
+  };
+
+  async function saveQueue(doctorId, date, version, before, after, extraStatusUpdates = []) {
+    const { changed, statusUpdates } = diffQueue(before, after);
+    await repo.applyQueue(doctorId, date, version, changed, [...statusUpdates, ...extraStatusUpdates]);
   }
 
-  function getAppointmentRow(id) {
-    const a = q('SELECT * FROM appointments WHERE id = ?').get(Number(id));
-    if (!a) throw notFound('Appointment not found');
-    return a;
-  }
-
-  const APPT_SELECT = `
-    SELECT a.*, p.name AS patient_name, p.phone AS patient_phone, p.age AS patient_age,
-           d.name AS doctor_name, d.department, d.duration_min,
-           qe.token, qe.state AS queue_state, qe.skips
-    FROM appointments a
-    JOIN patients p ON p.id = a.patient_id
-    JOIN doctors d  ON d.id = a.doctor_id
-    LEFT JOIN queue_entries qe ON qe.appointment_id = a.id`;
-
-  function getAppointment(id) {
-    const a = q(`${APPT_SELECT} WHERE a.id = ?`).get(Number(id));
-    if (!a) throw notFound('Appointment not found');
-    return a;
-  }
-
-  // ---------- queue persistence ----------
-  const QUEUE_FIELDS = ['token', 'seq', 'state', 'skips', 'checked_in_at', 'called_at', 'served_at'];
-
-  function loadEntries(doctorId, date) {
-    return q('SELECT * FROM queue_entries WHERE doctor_id = ? AND date = ?').all(doctorId, date);
-  }
-
-  /** Write back whatever the pure queue functions changed, and keep appointment.status in sync. */
-  function saveEntries(doctorId, date, before, after) {
-    const old = new Map(before.map((e) => [e.id, e]));
-    for (const e of after) {
-      if (e.id === undefined) {
-        q(
-          `INSERT INTO queue_entries (appointment_id, doctor_id, date, token, seq, state, skips, checked_in_at, called_at, served_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(e.appointment_id, doctorId, date, e.token, e.seq, e.state, e.skips, e.checked_in_at, e.called_at, e.served_at);
-        continue;
-      }
-      const prev = old.get(e.id);
-      if (QUEUE_FIELDS.every((f) => prev[f] === e[f])) continue;
-      q(`UPDATE queue_entries SET ${QUEUE_FIELDS.map((f) => `${f} = ?`).join(', ')} WHERE id = ?`).run(
-        ...QUEUE_FIELDS.map((f) => e[f]),
-        e.id
-      );
-      if (e.state !== prev.state && (e.state === 'done' || e.state === 'no_show')) {
-        q('UPDATE appointments SET status = ? WHERE id = ?').run(e.state, e.appointment_id);
-      }
-    }
-  }
-
-  function queueAction(doctorId, fn) {
-    const doctor = getDoctorRow(doctorId);
-    const date = today();
-    return transaction(db, () => {
-      const before = loadEntries(doctor.id, date);
-      let result;
+  /**
+   * Put an appointment in today's line. Two desks checking people in at the same moment
+   * both read the same queue version; the loser simply re-reads and takes the next token.
+   */
+  async function enqueue(doctorId, date, appointmentId, extraStatusUpdates) {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const { version, entries } = await repo.loadQueue(doctorId, date);
+      const { entries: after, entry } = runQueue(() => Queue.checkIn(entries, { appointmentId, now: now() }));
       try {
-        result = fn(before);
+        await saveQueue(doctorId, date, version, entries, after, extraStatusUpdates);
+        return entry;
       } catch (err) {
-        if (err instanceof Queue.QueueError) throw conflict(err.message);
-        throw err;
+        if (!(err instanceof QueueConflictError)) throw err;
       }
-      saveEntries(doctor.id, date, before, result.entries);
-      if (result.called) {
-        const a = getAppointment(result.called.appointment_id);
-        notify(a.patient_phone, `Token ${result.called.token}, please proceed to ${doctor.name}${doctor.room ? ` (Room ${doctor.room})` : ''}.`);
-      }
-      return getQueue(doctor.id, date);
-    });
+    }
+    throw conflict('The queue is busy — please try again');
+  }
+
+  /**
+   * Done / Skip / Call next. Unlike check-in these are NOT retried on a conflict: if two
+   * screens press Done at the same time, only the first should advance the queue.
+   */
+  async function queueAction(doctorId, fn) {
+    const doctor = await getDoctor(doctorId);
+    const date = today();
+    const { version, entries } = await repo.loadQueue(doctor.id, date);
+    const result = runQueue(() => fn(entries));
+    try {
+      await saveQueue(doctor.id, date, version, entries, result.entries);
+    } catch (err) {
+      if (err instanceof QueueConflictError) throw conflict('The queue was just updated from another screen — refreshed, please try again');
+      throw err;
+    }
+    if (result.called) {
+      const e = result.called;
+      const phone = e.patient_phone || (await getAppointment(e.appointment_id)).patient_phone;
+      await notify(phone, `Token ${e.token}, please proceed to ${doctor.name}${doctor.room ? ` (Room ${doctor.room})` : ''}.`);
+    }
+    return getQueue(doctor.id, date);
+  }
+
+  async function getQueue(doctorId, date = today()) {
+    const doctor = await getDoctor(doctorId);
+    const { entries } = await repo.loadQueue(doctor.id, date);
+    return { doctor, date, ...Queue.viewQueue(entries) };
   }
 
   // ---------- public API ----------
-  const api = {
+  return {
     today,
 
     // Doctors
-    listDoctors() {
-      return q('SELECT id FROM doctors ORDER BY name').all().map((d) => getDoctor(d.id));
-    },
-
+    listDoctors: () => repo.listDoctors(),
     getDoctor,
 
-    createDoctor(input) {
+    async createDoctor(input) {
       const d = validateDoctorInput(input);
       const schedules = validateSchedules(input.schedules || [], d.duration_min);
-      return transaction(db, () => {
-        const id = Number(
-          q('INSERT INTO doctors (name, department, duration_min, room) VALUES (?, ?, ?, ?)').run(d.name, d.department, d.duration_min, d.room ?? null)
-            .lastInsertRowid
-        );
-        for (const s of schedules) q('INSERT INTO schedules (doctor_id, weekday, start_time, end_time) VALUES (?, ?, ?, ?)').run(id, s.weekday, s.start_time, s.end_time);
-        return getDoctor(id);
-      });
+      const id = await repo.saveDoctor({ ...d, room: d.room ?? null, schedules });
+      return getDoctor(id);
     },
 
-    updateDoctor(id, input) {
-      const current = getDoctorRow(id);
+    async updateDoctor(id, input) {
+      const current = await getDoctor(id);
       const d = { ...current, ...validateDoctorInput(input, { partial: true }) };
       const schedules = input.schedules !== undefined ? validateSchedules(input.schedules, d.duration_min) : null;
-      return transaction(db, () => {
-        q('UPDATE doctors SET name = ?, department = ?, duration_min = ?, room = ? WHERE id = ?').run(d.name, d.department, d.duration_min, d.room ?? null, current.id);
-        if (schedules) {
-          q('DELETE FROM schedules WHERE doctor_id = ?').run(current.id);
-          for (const s of schedules) q('INSERT INTO schedules (doctor_id, weekday, start_time, end_time) VALUES (?, ?, ?, ?)').run(current.id, s.weekday, s.start_time, s.end_time);
-        }
-        return getDoctor(current.id);
-      });
+      await repo.saveDoctor({ id: current.id, name: d.name, department: d.department, duration_min: d.duration_min, room: d.room ?? null, schedules });
+      return getDoctor(current.id);
     },
 
     /** Adds a leave range. Returns the live appointments that now need rescheduling. */
-    addLeave(doctorId, { start_date, end_date, reason }) {
-      const doctor = getDoctorRow(doctorId);
+    async addLeave(doctorId, { start_date, end_date, reason } = {}) {
+      const doctor = await getDoctor(doctorId);
       end_date = end_date || start_date;
       if (!isValidDate(start_date) || !isValidDate(end_date)) throw bad('Leave dates must be YYYY-MM-DD');
       if (end_date < start_date) throw bad('Leave end date is before start date');
-      const overlap = q('SELECT 1 FROM leaves WHERE doctor_id = ? AND start_date <= ? AND end_date >= ?').get(doctor.id, end_date, start_date);
-      if (overlap) throw conflict('This leave overlaps an existing leave');
-      const id = Number(q('INSERT INTO leaves (doctor_id, start_date, end_date, reason) VALUES (?, ?, ?, ?)').run(doctor.id, start_date, end_date, reason || null).lastInsertRowid);
-      const affected = q(`${APPT_SELECT} WHERE a.doctor_id = ? AND a.date BETWEEN ? AND ? AND a.status = 'booked' ORDER BY a.date, a.slot_start`).all(doctor.id, start_date, end_date);
-      return { id, doctor_id: doctor.id, start_date, end_date, reason: reason || null, affected };
+      let leave;
+      try {
+        leave = await repo.insertLeave({ doctor_id: doctor.id, start_date, end_date, reason: reason || null });
+      } catch (err) {
+        if (err instanceof LeaveOverlapError) throw conflict('This leave overlaps an existing leave');
+        throw err;
+      }
+      const affected = await repo.listAppointments({ doctorId: doctor.id, from: start_date, to: end_date, status: 'booked' });
+      return { ...leave, affected };
     },
 
-    removeLeave(leaveId) {
-      const r = q('DELETE FROM leaves WHERE id = ?').run(Number(leaveId));
-      if (!r.changes) throw notFound('Leave not found');
+    async removeLeave(leaveId) {
+      if (!(await repo.deleteLeave(Number(leaveId)))) throw notFound('Leave not found');
       return { ok: true };
     },
 
     // Slots
-    getSlots(doctorId, date) {
+    async getSlots(doctorId, date) {
       if (!isValidDate(date)) throw bad('Date must be YYYY-MM-DD');
-      return { doctor_id: Number(doctorId), ...daySlots(getDoctor(doctorId), date) };
+      const doctor = await getDoctor(doctorId);
+      return { doctor_id: doctor.id, ...(await daySlots(doctor, date)) };
     },
 
-    /** The next `count` free slots from now, scanning forward up to `horizonDays`. */
-    nextFreeSlots(doctorId, { count = 3, fromDate = today(), horizonDays = 60 } = {}) {
-      const doctor = getDoctor(doctorId);
+    /** The next `count` free slots from now, scanning forward up to `horizonDays`. One DB read. */
+    async nextFreeSlots(doctorId, { count = 3, fromDate = today(), horizonDays = 60 } = {}) {
+      const doctor = await getDoctor(doctorId);
       const start = !isValidDate(fromDate) || fromDate < today() ? today() : fromDate;
+      const booked = await repo.bookedStarts(doctor.id, start, addDays(start, horizonDays - 1));
       const found = [];
       for (let i = 0; i < horizonDays && found.length < count; i++) {
         const date = addDays(start, i);
-        const day = daySlots(doctor, date);
-        for (const s of day.slots) {
+        for (const s of slotsFor(doctor, date, booked[date] || []).slots) {
           if (s.status === 'available') found.push({ date, start: s.start, end: s.end });
           if (found.length === count) break;
         }
@@ -299,129 +261,120 @@ function createServices(db, { now = () => new Date() } = {}) {
     },
 
     // Patients
-    findPatients(phone) {
+    async findPatients(phone) {
       const digits = String(phone || '').replace(/\D/g, '');
       if (digits.length < 3) return [];
-      return q('SELECT * FROM patients WHERE phone LIKE ? ORDER BY name LIMIT 5').all(`${digits}%`);
+      return repo.findPatientsByPhonePrefix(digits);
     },
 
     // Appointments
-    listAppointments({ date, doctorId } = {}) {
-      const where = [];
-      const params = [];
-      if (date) {
-        where.push('a.date = ?');
-        params.push(date);
-      }
-      if (doctorId) {
-        where.push('a.doctor_id = ?');
-        params.push(Number(doctorId));
-      }
-      return q(`${APPT_SELECT} ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-                ORDER BY a.date, a.slot_start IS NULL, a.slot_start, qe.token`).all(...params);
-    },
-
+    listAppointments: ({ date, doctorId } = {}) => repo.listAppointments({ date, doctorId: doctorId ? Number(doctorId) : undefined }),
     getAppointment,
 
-    bookAppointment({ doctorId, date, slot, patient }) {
-      const doctor = getDoctor(doctorId);
+    async bookAppointment({ doctorId, date, slot, patient } = {}) {
+      const doctor = await getDoctor(doctorId);
       const p = validatePatient(patient);
-      return transaction(db, () => {
-        assertBookable(doctor, date, slot);
-        const patientId = findOrCreatePatient(p);
-        let id;
-        try {
-          id = Number(
-            q(`INSERT INTO appointments (doctor_id, patient_id, date, slot_start, kind, status, created_at)
-               VALUES (?, ?, ?, ?, 'scheduled', 'booked', ?)`).run(doctor.id, patientId, date, slot, now().toISOString()).lastInsertRowid
-          );
-        } catch (err) {
-          // The partial unique index catches any race the check above could miss.
-          if (/UNIQUE/i.test(err.message)) throw conflict(`${slot} on ${date} is already booked`);
-          throw err;
-        }
-        notify(p.phone, `Appointment confirmed with ${doctor.name} on ${date} at ${slot}.`);
-        return getAppointment(id);
-      });
+      await assertBookable(doctor, date, slot);
+      const patientId = await repo.findOrCreatePatient(p);
+      let id;
+      try {
+        id = await repo.insertAppointment({
+          doctor_id: doctor.id, patient_id: patientId, date, slot_start: slot, kind: 'scheduled', status: 'booked', created_at: now().toISOString(),
+        });
+      } catch (err) {
+        // The unique index catches the race where two desks book the same slot at once.
+        if (err instanceof SlotTakenError) throw conflict(`${slot} on ${date} is already booked`);
+        throw err;
+      }
+      await notify(p.phone, `Appointment confirmed with ${doctor.name} on ${date} at ${slot}.`);
+      return getAppointment(id);
     },
 
     /** Walk-ins skip the slot and go straight into today's queue. */
-    addWalkIn({ doctorId, patient }) {
-      const doctor = getDoctor(doctorId);
+    async addWalkIn({ doctorId, patient } = {}) {
+      const doctor = await getDoctor(doctorId);
       const p = validatePatient(patient);
       const date = today();
       if (isOnLeave(date, doctor.leaves)) throw bad(`${doctor.name} is on leave today`);
-      return transaction(db, () => {
-        const patientId = findOrCreatePatient(p);
-        const id = Number(
-          q(`INSERT INTO appointments (doctor_id, patient_id, date, slot_start, kind, status, created_at)
-             VALUES (?, ?, ?, NULL, 'walkin', 'checked_in', ?)`).run(doctor.id, patientId, date, now().toISOString()).lastInsertRowid
-        );
-        const before = loadEntries(doctor.id, date);
-        const { entries, entry } = Queue.checkIn(before, { appointmentId: id, now: now() });
-        saveEntries(doctor.id, date, before, entries);
-        notify(p.phone, `Walk-in registered for ${doctor.name}. Your token is ${entry.token}.`);
-        return getAppointment(id);
+      const patientId = await repo.findOrCreatePatient(p);
+      const id = await repo.insertAppointment({
+        doctor_id: doctor.id, patient_id: patientId, date, slot_start: null, kind: 'walkin', status: 'checked_in', created_at: now().toISOString(),
       });
+      let entry;
+      try {
+        entry = await enqueue(doctor.id, date, id, []);
+      } catch (err) {
+        await repo.deleteAppointment(id); // don't leave a walk-in that isn't in the queue
+        throw err;
+      }
+      await notify(p.phone, `Walk-in registered for ${doctor.name}. Your token is ${entry.token}.`);
+      return getAppointment(id);
     },
 
-    cancelAppointment(id) {
-      const a = getAppointmentRow(id);
+    async cancelAppointment(id) {
+      const a = await getAppointment(id);
       if (a.status !== 'booked') throw conflict(`Only booked appointments can be cancelled (this one is ${a.status.replace('_', ' ')})`);
       if (a.date < today()) throw bad('Cannot cancel a past appointment');
-      q("UPDATE appointments SET status = 'cancelled', cancelled_at = ? WHERE id = ?").run(now().toISOString(), a.id);
-      const full = getAppointment(a.id);
-      notify(full.patient_phone, `Your appointment with ${full.doctor_name} on ${a.date} at ${a.slot_start} is cancelled.`);
-      return full;
+      // Conditional update: if they were checked in a moment ago, this changes nothing.
+      const ok = await repo.updateAppointment(a.id, { status: 'cancelled', cancelled_at: now().toISOString() }, { whereStatus: 'booked' });
+      if (!ok) throw conflict('This appointment was just updated — please refresh');
+      await notify(a.patient_phone, `Your appointment with ${a.doctor_name} on ${a.date} at ${a.slot_start} is cancelled.`);
+      return getAppointment(a.id);
     },
 
-    reschedule(id, { date, slot }) {
-      const a = getAppointmentRow(id);
+    async reschedule(id, { date, slot } = {}) {
+      const a = await getAppointment(id);
       if (a.status !== 'booked' || a.kind !== 'scheduled') throw conflict('Only booked (not yet checked-in) appointments can be rescheduled');
       if (a.date === date && a.slot_start === slot) throw bad('That is the current slot');
-      const doctor = getDoctor(a.doctor_id);
-      return transaction(db, () => {
-        assertBookable(doctor, date, slot, a.id);
-        q('UPDATE appointments SET date = ?, slot_start = ? WHERE id = ?').run(date, slot, a.id);
-        const full = getAppointment(a.id);
-        notify(full.patient_phone, `Your appointment with ${doctor.name} is moved to ${date} at ${slot}.`);
-        return full;
-      });
+      const doctor = await getDoctor(a.doctor_id);
+      await assertBookable(doctor, date, slot, a.id);
+      let ok;
+      try {
+        ok = await repo.updateAppointment(a.id, { date, slot_start: slot }, { whereStatus: 'booked' });
+      } catch (err) {
+        if (err instanceof SlotTakenError) throw conflict(`${slot} on ${date} is already booked`);
+        throw err;
+      }
+      if (!ok) throw conflict('This appointment was just updated — please refresh');
+      await notify(a.patient_phone, `Your appointment with ${doctor.name} is moved to ${date} at ${slot}.`);
+      return getAppointment(a.id);
     },
 
     // Queue
-    checkIn(appointmentId) {
-      const a = getAppointmentRow(appointmentId);
+    async checkIn(appointmentId) {
+      const a = await getAppointment(appointmentId);
       if (a.status !== 'booked') throw conflict(`Cannot check in: appointment is ${a.status.replace('_', ' ')}`);
       if (a.date !== today()) throw bad(`Check-in is only allowed on the appointment day (${a.date})`);
-      const doctor = getDoctor(a.doctor_id);
+      const doctor = await getDoctor(a.doctor_id);
       if (isOnLeave(a.date, doctor.leaves)) throw bad(`${doctor.name} is on leave today — please reschedule`);
-      return transaction(db, () => {
-        const before = loadEntries(doctor.id, a.date);
-        const { entries, entry } = Queue.checkIn(before, { appointmentId: a.id, now: now() });
-        saveEntries(doctor.id, a.date, before, entries);
-        q("UPDATE appointments SET status = 'checked_in' WHERE id = ?").run(a.id);
-        const full = getAppointment(a.id);
-        notify(full.patient_phone, `You are checked in for ${doctor.name}. Your token is ${entry.token}.`);
-        return full;
-      });
+      const entry = await enqueue(doctor.id, a.date, a.id, [{ id: a.id, status: 'checked_in' }]);
+      await notify(a.patient_phone, `You are checked in for ${doctor.name}. Your token is ${entry.token}.`);
+      return getAppointment(a.id);
     },
 
     getQueue,
+
+    /** Every doctor's queue for today, in one read (used by the live queue + waiting screen). */
+    async getAllQueues() {
+      const date = today();
+      const [doctors, entries] = await Promise.all([repo.listDoctors(), repo.listQueueByDate(date)]);
+      return doctors.map((doctor) => ({ doctor, date, ...Queue.viewQueue(entries.filter((e) => e.doctor_id === doctor.id)) }));
+    },
+
     callNext: (doctorId) => queueAction(doctorId, (entries) => Queue.callNext(entries, { now: now() })),
     markDone: (doctorId) => queueAction(doctorId, (entries) => Queue.markDone(entries, { now: now() })),
     skip: (doctorId) => queueAction(doctorId, (entries) => Queue.skip(entries, { now: now() })),
 
     // Reports
-    getReport(date = today()) {
+    async getReport(date = today()) {
       if (!isValidDate(date)) throw bad('Date must be YYYY-MM-DD');
-      return q('SELECT * FROM doctors ORDER BY name').all().map((d) => {
-        const appts = q('SELECT * FROM appointments WHERE doctor_id = ? AND date = ?').all(d.id, date);
-        const entries = loadEntries(d.id, date);
+      const [doctors, appointments, queue] = await Promise.all([repo.listDoctors(), repo.listAppointments({ date }), repo.listQueueByDate(date)]);
+      const avg = (xs) => (xs.length ? Math.round((xs.reduce((s, x) => s + x, 0) / xs.length) * 10) / 10 : null);
+      return doctors.map((d) => {
+        const appts = appointments.filter((a) => a.doctor_id === d.id);
+        const entries = queue.filter((e) => e.doctor_id === d.id);
         const live = appts.filter((a) => a.status !== 'cancelled');
-        const waits = entries.filter((e) => e.state === 'done' && e.called_at).map((e) => minutesBetween(e.checked_in_at, e.called_at));
-        const consults = entries.filter((e) => e.state === 'done' && e.called_at && e.served_at).map((e) => minutesBetween(e.called_at, e.served_at));
-        const avg = (xs) => (xs.length ? Math.round((xs.reduce((s, x) => s + x, 0) / xs.length) * 10) / 10 : null);
+        const seen = entries.filter((e) => e.state === 'done');
         return {
           doctor_id: d.id,
           doctor_name: d.name,
@@ -430,34 +383,18 @@ function createServices(db, { now = () => new Date() } = {}) {
           walk_ins: live.filter((a) => a.kind === 'walkin').length,
           cancelled: appts.length - live.length,
           checked_in: entries.length,
-          seen: entries.filter((e) => e.state === 'done').length,
+          seen: seen.length,
           no_shows: entries.filter((e) => e.state === 'no_show').length,
           not_arrived: live.filter((a) => a.status === 'booked').length,
           still_in_queue: entries.filter((e) => e.state === 'waiting' || e.state === 'serving').length,
-          avg_wait_min: avg(waits),
-          avg_consult_min: avg(consults),
+          avg_wait_min: avg(seen.filter((e) => e.called_at).map((e) => minutesBetween(e.checked_in_at, e.called_at))),
+          avg_consult_min: avg(seen.filter((e) => e.called_at && e.served_at).map((e) => minutesBetween(e.called_at, e.served_at))),
         };
       });
     },
 
-    listNotifications(limit = 100) {
-      return q('SELECT * FROM notifications ORDER BY id DESC LIMIT ?').all(Number(limit));
-    },
+    listNotifications: (limit = 100) => repo.listNotifications(Number(limit)),
   };
-
-  function getQueue(doctorId, date = today()) {
-    const doctor = getDoctorRow(doctorId);
-    const rows = q(
-      `SELECT qe.*, p.name AS patient_name, p.age AS patient_age, a.kind, a.slot_start
-       FROM queue_entries qe
-       JOIN appointments a ON a.id = qe.appointment_id
-       JOIN patients p ON p.id = a.patient_id
-       WHERE qe.doctor_id = ? AND qe.date = ?`
-    ).all(doctor.id, date);
-    return { doctor, date, ...Queue.viewQueue(rows) };
-  }
-
-  return api;
 }
 
 module.exports = { createServices, AppError, maskPhone, validatePatient, validateSchedules };

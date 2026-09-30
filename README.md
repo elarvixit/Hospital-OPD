@@ -2,21 +2,37 @@
 
 An outpatient department system: the front desk books slots with doctors, checks patients in, and runs a live token queue. Doctors see their own queue and mark patients done.
 
-**Stack:** Node.js 22.13+ · Express · SQLite (Node's built-in `node:sqlite`, so there's no native build step) · vanilla HTML/CSS/JS · `node:test` for tests.
+**Stack:** Node.js 22.9+ · Express · **Supabase (Postgres)** · vanilla HTML/CSS/JS · `node:test` · deployable on **Vercel**.
 
-## Run it
+## Run locally
 
 ```bash
 npm install
 npm start          # http://localhost:3000
-npm test           # 77 tests
-npm run reset      # delete the database; demo data is re-seeded on next start
+npm test           # 84 tests (no database needed)
 ```
+
+With no `.env` file, `npm start` uses an **in-memory database with demo data**. That's handy for a quick demo, but the data is lost on restart. To use Supabase locally, copy `.env.example` to `.env` and fill in the values.
 
 - **Main app:** http://localhost:3000. Use the dropdown at the top right to switch between **Front desk** and **Doctor**.
 - **Waiting-area screen:** http://localhost:3000/display.html. It refreshes every 10 s and chimes when a token changes. It shows token numbers only, never patient names.
 
-The demo data is seeded relative to *today*: 4 doctors, yesterday's finished day (for the report), today's queue in progress, a few bookings for tomorrow, and some leave days.
+## Deploy: Supabase + Vercel
+
+1. **Supabase:** Dashboard → **SQL Editor** → New query → paste [supabase/schema.sql](supabase/schema.sql) → **Run**. It's safe to run again later.
+   All tables, views and functions are prefixed `ganesh_hospitalopd_`.
+2. **Vercel:** import the GitHub repo (Framework preset: *Other*; no build command needed; `vercel.json` sets everything). Add these under **Project → Settings → Environment Variables**:
+
+   | Name | Value | Where to find it |
+   |---|---|---|
+   | `SUPABASE_URL` | `https://<project-ref>.supabase.co` | Supabase → Project Settings → API (or Data API) → Project URL |
+   | `SUPABASE_SERVICE_ROLE_KEY` | the **service_role** key (or the new **secret** key, `sb_secret_…`) | Supabase → Project Settings → API Keys |
+   | `APP_TIMEZONE` | `Asia/Kolkata` | The hospital's timezone. Vercel servers run on UTC, so this decides what "today" and "past slot" mean |
+
+   Redeploy after adding them.
+3. **Demo data (optional):** with the same values in a local `.env`, run `npm run seed`. This adds 4 doctors plus bookings and queues relative to today. It does nothing if doctors already exist.
+
+**Security:** the browser only ever calls this app's `/api`, never Supabase directly. The service-role key stays on the server. RLS is enabled on every table with no policies, and the public `anon` key has no privileges, so a leaked anon key can't read patient data. Never put the service-role key in frontend code or give it a `NEXT_PUBLIC_`/`VITE_` style prefix.
 
 ## Features
 
@@ -36,19 +52,33 @@ The demo data is seeded relative to *today*: 4 doctors, yesterday's finished day
 ## Project layout
 
 ```
+api/index.js         Vercel serverless entry (all /api/* requests)
 src/
-  core/time.js     date/time helpers (dates are 'YYYY-MM-DD' strings, times 'HH:MM')
-  core/slots.js    slot generation — pure, no DB
-  core/queue.js    queue state machine — pure, no DB
-  db.js            schema + transaction helper
-  services.js      business rules (validation, booking, check-in, reports…) on top of core + DB
-  server.js        Express REST API
-  seed.js          demo data
-public/            frontend (index.html, app.js, styles.css, display.html)
-test/              slots.test.js, queue.test.js, services.test.js
+  core/time.js       date/time helpers, timezone-aware ('YYYY-MM-DD' dates, 'HH:MM' times)
+  core/slots.js      slot generation — pure, no DB
+  core/queue.js      queue state machine — pure, no DB
+  services.js        business rules (validation, booking, check-in, reports…)
+  repo/supabase.js   data access via supabase-js (tables, views, RPC functions)
+  repo/memory.js     same interface + same constraints, in memory (tests & local demo)
+  app.js             Express routes          server.js   local dev server
+  seed.js            demo data               scripts/seed.js   npm run seed → Supabase
+supabase/schema.sql  run once in the Supabase SQL editor
+public/              frontend (index.html, app.js, styles.css, display.html)
+test/                slots.test.js, queue.test.js, services.test.js
 ```
 
-The two core modules are pure functions that take `now` as a parameter. That makes the tricky logic testable without a database or a real clock. `services.js` also takes an injectable clock (`createServices(db, { now })`), so the integration tests can move between days.
+The two core modules are pure functions that take `now` as a parameter. That makes the tricky logic testable without a database or a real clock. `services.js` takes a repository and an injectable clock, so the integration tests run against the in-memory repository. That repository enforces the same constraints as the Postgres schema.
+
+### Consistency without transactions in the client
+
+supabase-js can't run multi-statement transactions, so the operations that must be atomic are Postgres functions called with `rpc`:
+
+- `ganesh_hospitalopd_save_doctor` saves a doctor and replaces their weekly schedule in one step.
+- `ganesh_hospitalopd_apply_queue` writes the queue changes computed by `core/queue.js` in one step, using **optimistic locking**. Each doctor-day has a `version` in `queue_days`. If another screen changed the queue since it was read, the call fails with SQLSTATE 40001 and the API returns 409.
+  - Check-ins retry automatically, so the second person simply gets the next token.
+  - Done/Skip do **not** retry. Two screens pressing Done at the same moment advance the queue only once.
+
+Double-booking and overlapping leave are stopped by database constraints (a partial unique index and an exclusion constraint), not just by application checks.
 
 ## Slot generation rules
 
@@ -80,7 +110,7 @@ Weekdays are worked out from the date string using UTC, so timezone and DST chan
 ## Other business rules
 
 - Past dates, earlier slots today, leave days, non-working days and off-grid times (e.g. `10:07`) are all refused.
-- Double-booking is checked in code **and** by a partial unique index: `UNIQUE(doctor_id, date, slot_start) WHERE status <> 'cancelled'`. Because cancelled rows are excluded from that index, **cancelling frees the slot immediately**.
+- Double-booking is checked in code **and** by a partial unique index in Postgres: `UNIQUE(doctor_id, date, slot_start) WHERE status <> 'cancelled'`. Because cancelled rows are excluded from that index, **cancelling frees the slot immediately**.
 - Check-in is only allowed on the appointment day, and only for `booked` appointments. It is refused if the doctor has since gone on leave.
 - Adding a leave returns the booked appointments that fall inside it, so the desk can reschedule them.
 - Walk-ins get no slot and go straight into today's queue. They are refused on a leave day.
@@ -109,4 +139,4 @@ Staggered card entrances, hover lifts, ripple on button press, a sliding tab ind
 
 ## Not done (out of scope)
 
-Login is replaced by the role dropdown, as the brief allows for the core version. SMS messages are logged, not actually sent. There's one timezone (the server's local time).
+Login is replaced by the role dropdown, as the brief allows for the core version. SMS messages are logged, not actually sent. There is one timezone for the whole hospital (`APP_TIMEZONE`).

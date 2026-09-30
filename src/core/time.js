@@ -42,17 +42,44 @@ function addDays(dateStr, n) {
   return dt.toISOString().slice(0, 10);
 }
 
-/** The local calendar date of a JS Date, as 'YYYY-MM-DD'. */
-function localDate(now) {
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+/**
+ * Wall-clock parts of `now` in `timeZone` (e.g. 'Asia/Kolkata').
+ * Without a timeZone, the machine's local time is used. Servers like Vercel run in UTC,
+ * so production passes the hospital's timezone explicitly.
+ */
+function zonedParts(now, timeZone) {
+  if (!timeZone) {
+    return { y: now.getFullYear(), m: now.getMonth() + 1, d: now.getDate(), h: now.getHours(), min: now.getMinutes(), s: now.getSeconds() };
+  }
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+    }).formatToParts(now).map((p) => [p.type, p.value])
+  );
+  return { y: +parts.year, m: +parts.month, d: +parts.day, h: +parts.hour, min: +parts.minute, s: +parts.second };
 }
 
-/** Minutes since local midnight, including the fractional seconds part. */
-function localMinutes(now) {
-  return now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60;
+/** The calendar date of `now` in the hospital's timezone, as 'YYYY-MM-DD'. */
+function localDate(now, timeZone) {
+  const { y, m, d } = zonedParts(now, timeZone);
+  return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
+/** Minutes since midnight in the hospital's timezone, including the fractional seconds part. */
+function localMinutes(now, timeZone) {
+  const { h, min, s } = zonedParts(now, timeZone);
+  return h * 60 + min + s / 60;
+}
+
+/** The instant at which the wall clock in `timeZone` reads `dateStr hhmm`. */
+function zonedTimeToDate(dateStr, hhmm, timeZone) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const [h, min] = hhmm.split(':').map(Number);
+  if (!timeZone) return new Date(y, m - 1, d, h, min);
+  const guess = Date.UTC(y, m - 1, d, h, min);
+  const p = zonedParts(new Date(guess), timeZone);
+  const offset = Date.UTC(p.y, p.m - 1, p.d, p.h, p.min, p.s) - guess;
+  return new Date(guess - offset);
 }
 
 function minutesBetween(fromIso, toIso) {
@@ -70,6 +97,7 @@ module.exports = {
   addDays,
   localDate,
   localMinutes,
+  zonedTimeToDate,
   minutesBetween,
   WEEKDAY_NAMES,
 };

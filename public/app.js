@@ -931,11 +931,16 @@ const VIEWS = {
   notifications: viewNotifications,
 };
 
+let lastBrowserDate = toDateStr(new Date());
 function tickClock() {
   const now = new Date();
   $('#clock').textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  const today = toDateStr(now);
-  if (today !== state.today) state.today = today; // rolled past midnight
+  // "Today" comes from the server (hospital timezone). Re-ask it when the local date rolls over.
+  const browserDate = toDateStr(now);
+  if (browserDate !== lastBrowserDate) {
+    lastBrowserDate = browserDate;
+    api('/meta').then((m) => { state.today = m.today; }).catch(() => {});
+  }
 }
 
 async function boot() {

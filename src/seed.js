@@ -1,7 +1,7 @@
 'use strict';
 
 const { createServices } = require('./services');
-const { addDays, localDate, toMinutes } = require('./core/time');
+const { addDays, localDate, zonedTimeToDate } = require('./core/time');
 
 const DOCTORS = [
   {
@@ -53,26 +53,24 @@ const PATIENTS = [
   ['Arun Prakash', 55], ['Pooja Gupta', 24], ['Sanjay Patil', 48], ['Nisha Bansal', 5],
 ];
 
-function seedIfEmpty(db) {
-  if (db.prepare('SELECT COUNT(*) AS n FROM doctors').get().n > 0) return false;
+/** Load demo data relative to today. Does nothing if doctors already exist. */
+async function seedDemo(repo, { timeZone } = {}) {
+  if ((await repo.listDoctors()).length > 0) return false;
 
   const realNow = new Date();
   let clock = realNow;
-  const svc = createServices(db, { now: () => clock });
-  const at = (date, hhmm) => {
-    const [y, m, d] = date.split('-').map(Number);
-    const mins = toMinutes(hhmm);
-    return new Date(y, m - 1, d, Math.floor(mins / 60), mins % 60);
-  };
+  const svc = createServices(repo, { now: () => clock, timeZone });
+  const at = (date, hhmm) => zonedTimeToDate(date, hhmm, timeZone);
   const plus = (date, mins) => new Date(date.getTime() + mins * 60000);
 
-  const doctors = DOCTORS.map((d) => svc.createDoctor(d));
-  const today = localDate(realNow);
+  const doctors = [];
+  for (const d of DOCTORS) doctors.push(await svc.createDoctor(d));
+  const today = localDate(realNow, timeZone);
   const yesterday = addDays(today, -1);
 
   // Leaves: Dr. Arjun is off tomorrow, Dr. Vikram takes a 3-day break next week
-  svc.addLeave(doctors[3].id, { start_date: addDays(today, 1), reason: 'Conference' });
-  svc.addLeave(doctors[1].id, { start_date: addDays(today, 7), end_date: addDays(today, 9), reason: 'Personal' });
+  await svc.addLeave(doctors[3].id, { start_date: addDays(today, 1), reason: 'Conference' });
+  await svc.addLeave(doctors[1].id, { start_date: addDays(today, 7), end_date: addDays(today, 9), reason: 'Personal' });
 
   let p = 0;
   const nextPatient = () => {
@@ -82,49 +80,51 @@ function seedIfEmpty(db) {
     return { name, age, phone };
   };
 
-  const bookFirstSlots = (doctor, date, n) => {
+  const bookFirstSlots = async (doctor, date, n) => {
     clock = at(date, '00:01');
-    const slots = svc.getSlots(doctor.id, date).slots.filter((s) => s.status === 'available').slice(0, n);
-    return slots.map((s) => svc.bookAppointment({ doctorId: doctor.id, date, slot: s.start, patient: nextPatient() }));
+    const slots = (await svc.getSlots(doctor.id, date)).slots.filter((s) => s.status === 'available').slice(0, n);
+    const out = [];
+    for (const s of slots) out.push(await svc.bookAppointment({ doctorId: doctor.id, date, slot: s.start, patient: nextPatient() }));
+    return out;
   };
 
   for (const doctor of doctors) {
     // Yesterday: a finished day so the daily report has history
-    const past = bookFirstSlots(doctor, yesterday, 6);
+    const past = await bookFirstSlots(doctor, yesterday, 6);
     if (past.length === 6) {
       const firstSlot = at(yesterday, past[0].slot_start);
-      past.forEach((a, i) => {
+      for (const [i, a] of past.entries()) {
         clock = plus(firstSlot, -15 + i * 4);
-        svc.checkIn(a.id);
-      });
+        await svc.checkIn(a.id);
+      }
       clock = firstSlot;
-      svc.callNext(doctor.id);
+      await svc.callNext(doctor.id);
       // token 3 is skipped (sent to the back), called again at the end, skipped again -> no-show
       for (const action of ['markDone', 'markDone', 'skip', 'markDone', 'markDone', 'markDone', 'skip']) {
         clock = plus(clock, doctor.duration_min + (action === 'skip' ? -doctor.duration_min + 2 : 3));
-        try { svc[action](doctor.id); } catch { /* queue ran out early */ }
+        try { await svc[action](doctor.id); } catch { /* queue ran out early */ }
       }
     }
 
     // Today: some patients checked in, one being seen, a walk-in, and a few still to arrive
-    const todays = bookFirstSlots(doctor, today, 5);
+    const todays = await bookFirstSlots(doctor, today, 5);
     if (todays.length === 5) {
-      todays.slice(0, 3).forEach((a, i) => {
+      for (const [i, a] of todays.slice(0, 3).entries()) {
         clock = plus(realNow, -50 + i * 5);
-        svc.checkIn(a.id);
-      });
+        await svc.checkIn(a.id);
+      }
       clock = plus(realNow, -30);
-      svc.addWalkIn({ doctorId: doctor.id, patient: nextPatient() });
+      await svc.addWalkIn({ doctorId: doctor.id, patient: nextPatient() });
       clock = plus(realNow, -25);
-      svc.callNext(doctor.id);
+      await svc.callNext(doctor.id);
       clock = plus(realNow, -8);
-      svc.markDone(doctor.id);
+      await svc.markDone(doctor.id);
     }
 
     // Tomorrow: a couple of advance bookings
-    bookFirstSlots(doctor, addDays(today, 1), 2);
+    await bookFirstSlots(doctor, addDays(today, 1), 2);
   }
   return true;
 }
 
-module.exports = { seedIfEmpty };
+module.exports = { seedDemo };

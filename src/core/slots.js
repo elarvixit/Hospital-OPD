@@ -35,10 +35,11 @@ function isOnLeave(date, leaves) {
  * @param {Array}  p.leaves        [{ start_date, end_date }]
  * @param {Array}  p.booked        slot_start strings of non-cancelled appointments, e.g. ['10:15']
  * @param {Date}   p.now           current time (injected so tests can control it)
+ * @param {string} [p.timeZone]    IANA zone for "today" and "now", e.g. 'Asia/Kolkata'
  * @returns {{ date, onLeave, working, slots: Array<{start,end,status}> }}
  *          status is one of 'available' | 'booked' | 'past'
  */
-function generateDaySlots({ date, durationMin, schedules, leaves = [], booked = [], now }) {
+function generateDaySlots({ date, durationMin, schedules, leaves = [], booked = [], now, timeZone }) {
   if (!isValidDate(date)) throw new Error(`Invalid date: ${date}`);
   if (!Number.isInteger(durationMin) || durationMin <= 0) throw new Error(`Invalid duration: ${durationMin}`);
   if (!(now instanceof Date)) throw new Error('now must be a Date');
@@ -62,8 +63,8 @@ function generateDaySlots({ date, durationMin, schedules, leaves = [], booked = 
   // bookings were made, any new slot that overlaps an existing booking is still blocked.
   const bookedIntervals = booked.filter(isValidTime).map((b) => [toMinutes(b), toMinutes(b) + durationMin]);
 
-  const today = localDate(now);
-  const nowMin = localMinutes(now);
+  const today = localDate(now, timeZone);
+  const nowMin = localMinutes(now, timeZone);
 
   for (const [blockStart, blockEnd] of blocks) {
     // Only whole slots: a 15-min doctor with a 10:00-10:50 block gets 10:00, 10:15, 10:30 (not 10:45).
